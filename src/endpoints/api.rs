@@ -53,6 +53,7 @@ fn provider_metadata(id: &str, provider: &ProviderConfig) -> Value {
         ProviderConfig::OpenRouter(_) => ("openrouter", "api_key"),
         ProviderConfig::Zai(_) => ("zai", "api_key"),
     };
+
     json!({"id": id, "type": provider_type, "auth": auth})
 }
 
@@ -77,6 +78,7 @@ mod tests {
             provider_metadata("openai-api", &api_key),
             json!({"id": "openai-api", "type": "openai", "auth": "api_key"})
         );
+
         assert_eq!(
             provider_metadata("codex", &subscription),
             json!({"id": "codex", "type": "openai", "auth": "subscription"})

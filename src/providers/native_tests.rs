@@ -64,15 +64,18 @@ fn native_model_options_validate_effort() {
             } else {
                 json!({"type":provider,"api_key":"fixture-key"})
             };
+
             provider_config["models"] = json!({"native/model":{"reasoning_effort":effort}});
             let config = serde_json::from_value::<crate::config::Config>(json!({
                 "providers":{"fixture":provider_config}
             }));
+
             assert_eq!(
                 config.is_ok(),
                 valid,
                 "deserialize {provider} effort {effort}"
             );
+
             if let Ok(config) = &config {
                 use crate::config::ProviderConfig;
                 let configured = match &config.providers["fixture"] {
@@ -84,9 +87,11 @@ fn native_model_options_validate_effort() {
                     ProviderConfig::OpenRouter(c) => c.models["native/model"].reasoning_effort,
                     ProviderConfig::Zai(c) => c.models["native/model"].reasoning_effort,
                 };
+
                 assert_eq!(json!(configured), effort);
                 assert_eq!(configured.map(|e| e.as_str()), effort.as_str());
             }
+
             assert_eq!(config.is_ok_and(|config| config.validate().is_ok()), valid);
         }
     }
@@ -104,8 +109,10 @@ async fn provider_trait_maps_effort_for_the_selected_model() {
             "zai":{"type":"zai","api_key":"fixture-key"}
         }
     })).unwrap();
+
     config.validate().unwrap();
     let registry = Registry::new(&config).await.unwrap();
+
     for (model, effort, expected) in [
         ("openai/gpt-5.6-sol", "max", Some("max")),
         ("openai/gpt-6-astra", "max", Some("max")),
@@ -127,6 +134,7 @@ async fn provider_trait_maps_effort_for_the_selected_model() {
         ("zai/glm-future", "max", Some("max")),
     ] {
         let (provider, native) = registry.resolve(model).unwrap();
+
         match provider.convert_reasoning_effort(&native, effort) {
             Ok(actual) => assert_eq!(Some(actual.as_str()), expected, "{model} {effort:?}"),
             Err(error) => {
@@ -135,6 +143,7 @@ async fn provider_trait_maps_effort_for_the_selected_model() {
             }
         }
     }
+
     drop(registry);
     let _ = std::fs::remove_dir_all(directory);
 }
@@ -161,6 +170,7 @@ async fn send_applies_extra_headers_only_when_set() {
             Json(json!({}))
         }
     }));
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!(
         "http://{}/v1/chat/completions",
@@ -219,17 +229,21 @@ async fn native_routes_preserve_models_extensions_and_allowed_headers() {
                 } else {
                     vec![json!({"model":model,"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":"stop"}],"provider_extension":{"keep":true}})]
                 };
+
                 let mut wire = values.iter().map(|value|format!("data: {value}\n\n")).collect::<String>();
+
                 if uri.path().ends_with("/chat/completions") { wire.push_str("data: [DONE]\n\n"); }
                 let chunks = wire.as_bytes().chunks(3).map(|bytes|Ok::<_,std::io::Error>(Bytes::copy_from_slice(bytes))).collect::<Vec<_>>();
                 Body::from_stream(stream::iter(chunks))
             } else {
                 Body::from(json!({"model":model,"status":"completed","provider_extension":{"keep":true},"content":[]}).to_string())
             };
+
             sender.send((uri, headers, body)).await.unwrap();
             ([ ("x-request-id", "req-upstream"), ("retry-after", "3"), ("x-private", "hidden"), ("content-type", if streaming {"text/event-stream; charset=utf-8"} else {"application/json"}) ], response)
         }
     }));
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -264,6 +278,7 @@ async fn native_routes_preserve_models_extensions_and_allowed_headers() {
     )
     .unwrap();
     assert_eq!(router.models()[0].id, "deepseek/deepseek-4-pro");
+
     for (provider, model, format, path) in [
         (
             &router as &dyn Provider,
@@ -307,6 +322,7 @@ async fn native_routes_preserve_models_extensions_and_allowed_headers() {
         let ResponseBody::Json(body) = output.body else {
             panic!("expected JSON")
         };
+
         assert_eq!(body["model"], format!("router/{model}"));
         assert_eq!(body["provider_extension"], json!({"keep":true}));
         let (uri, headers, body) = receiver.recv().await.unwrap();
@@ -321,16 +337,19 @@ async fn native_routes_preserve_models_extensions_and_allowed_headers() {
                 "openrouter-client/test"
             }
         );
+
         assert!(!headers.contains_key("x-api-key"));
         assert!(!headers.contains_key("x-private"));
         assert_eq!(
             headers.contains_key("anthropic-beta"),
             format == ApiFormat::Anthropic
         );
+
         if format == ApiFormat::Anthropic {
             assert_eq!(headers["anthropic-version"], "2023-06-01");
             assert_eq!(headers["anthropic-beta"], "test-beta");
         }
+
         assert_eq!(body["model"], model);
         assert_eq!(body["provider_extension"], json!({"keep":true}));
         let effort_pointer = match format {
@@ -339,6 +358,7 @@ async fn native_routes_preserve_models_extensions_and_allowed_headers() {
             ApiFormat::ChatCompletions if model == "glm-5.3" => "/reasoning_effort",
             ApiFormat::ChatCompletions => "/reasoning/effort",
         };
+
         assert_eq!(body.pointer(effort_pointer), Some(&json!("high")));
         let output = provider
             .execute(request(format, model, true), context(model))
@@ -347,8 +367,10 @@ async fn native_routes_preserve_models_extensions_and_allowed_headers() {
         let ResponseBody::Stream(mut events) = output.body else {
             panic!("expected SSE")
         };
+
         let mut values = Vec::new();
         let mut done = false;
+
         while let Some(event) = events.next().await {
             match event.unwrap() {
                 ApiEvent::Anthropic(v) | ApiEvent::ChatCompletions(v) | ApiEvent::Responses(v) => {
@@ -357,16 +379,19 @@ async fn native_routes_preserve_models_extensions_and_allowed_headers() {
                 ApiEvent::Done => done = true,
             }
         }
+
         let returned_model = match format {
             ApiFormat::Anthropic => &values[0]["message"]["model"],
             ApiFormat::ChatCompletions => &values[0]["model"],
             ApiFormat::Responses => &values[0]["response"]["model"],
         };
+
         assert_eq!(returned_model, &json!(format!("router/{model}")));
         assert_eq!(
             values.last().unwrap()["provider_extension"],
             json!({"keep":true})
         );
+
         assert_eq!(done, format == ApiFormat::ChatCompletions);
         let (_, _, body) = receiver.recv().await.unwrap();
         assert_eq!(body["stream"], true);
@@ -382,11 +407,13 @@ async fn native_routes_preserve_models_extensions_and_allowed_headers() {
             ("max", "max"),
         ] {
             let mut body = request(format, model, false).into_value();
+
             if container.is_empty() {
                 body[key] = json!(client_effort);
             } else {
                 body[container] = json!({key: client_effort, "keep": true});
             }
+
             provider
                 .execute(
                     ApiRequest::parse(format, body.clone()).unwrap(),
@@ -398,13 +425,16 @@ async fn native_routes_preserve_models_extensions_and_allowed_headers() {
             *body.pointer_mut(effort_pointer).unwrap() = json!(provider_effort);
             assert_eq!(receiver.recv().await.unwrap().2, body);
         }
+
         for invalid in [json!("unsupported"), json!(42)] {
             let mut body = request(format, model, false).into_value();
+
             if container.is_empty() {
                 body[key] = invalid;
             } else {
                 body[container] = json!({key: invalid});
             }
+
             let error = provider
                 .execute(ApiRequest::parse(format, body).unwrap(), context(model))
                 .await
@@ -413,11 +443,13 @@ async fn native_routes_preserve_models_extensions_and_allowed_headers() {
             assert_eq!(error.status, StatusCode::BAD_REQUEST);
             assert!(receiver.try_recv().is_err());
         }
+
         if container.is_empty() {
             explicit[key] = json!("low");
         } else {
             explicit[container] = json!({key: "low", "keep": true});
         }
+
         for overrides in [
             explicit,
             json!({"reasoning_effort":null}),
@@ -459,11 +491,13 @@ async fn native_routes_preserve_models_extensions_and_allowed_headers() {
             .await
             .unwrap();
         expected["model"] = json!(model);
+
         if container.is_empty() {
             expected[key] = json!("high");
         } else {
             expected[container][key] = json!("high");
         }
+
         assert_eq!(receiver.recv().await.unwrap().2, expected);
 
         provider
@@ -483,6 +517,7 @@ async fn native_routes_preserve_models_extensions_and_allowed_headers() {
                 .is_none()
         );
     }
+
     task.abort();
 }
 
@@ -528,37 +563,47 @@ async fn native_fragmented_tool_events_stay_incremental_and_preserve_fields() {
         .collect::<Vec<_>>()
         .await;
     assert_eq!(actual.len(), events.len());
+
     for (i, event) in actual.into_iter().enumerate() {
         let ApiEvent::Anthropic(value) = event.unwrap() else {
             panic!("expected Anthropic")
         };
+
         let mut expected = events[i].clone();
+
         if i == 0 {
             expected["message"]["model"] = json!("router/native/model");
         }
+
         assert_eq!(value, expected);
     }
+
     let mut chat = decode(
         "data: {\"model\":\"native/model\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
         ApiFormat::ChatCompletions,
         4096,
     );
+
     let ApiEvent::ChatCompletions(value) = chat.next().await.unwrap().unwrap() else {
         panic!("expected Chat")
     };
+
     assert_eq!(value["model"], "router/native/model");
     assert_eq!(
         value["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"],
         "{"
     );
+
     assert!(matches!(
         chat.next().await.unwrap().unwrap(),
         ApiEvent::ChatCompletions(_)
     ));
+
     assert!(matches!(
         chat.next().await.unwrap().unwrap(),
         ApiEvent::Done
     ));
+
     assert!(chat.next().await.is_none());
 }
 
@@ -639,10 +684,12 @@ async fn native_streams_reject_failures_truncation_and_wire_limit() {
         assert!(!error.message.contains("secret"));
         assert_eq!(events.iter().filter(|event| event.is_err()).count(), 1);
     }
+
     for status in ["completed", "incomplete"] {
         let wire = format!(
             "data: {{\"type\":\"response.{status}\",\"response\":{{\"model\":\"native/model\",\"status\":\"{status}\"}}}}\n\n"
         );
+
         let events = decode(&wire, ApiFormat::Responses, 4096)
             .collect::<Vec<_>>()
             .await;
@@ -650,6 +697,7 @@ async fn native_streams_reject_failures_truncation_and_wire_limit() {
         let ApiEvent::Responses(value) = events.into_iter().next().unwrap().unwrap() else {
             panic!("expected Responses")
         };
+
         assert_eq!(value["response"]["model"], "router/native/model");
     }
 }
@@ -662,6 +710,7 @@ async fn dropping_native_stream_cancels_source_without_waiting_for_completion() 
             self.0.store(true, Ordering::SeqCst);
         }
     }
+
     let dropped = Arc::new(AtomicBool::new(false));
     let guard = Dropped(dropped.clone());
     let source = async_stream::stream! {
@@ -669,6 +718,7 @@ async fn dropping_native_stream_cancels_source_without_waiting_for_completion() 
         yield Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"choices\":[]}\n\n"));
         futures::future::pending::<()>().await;
     };
+
     let mut output = http::decode_native(
         source,
         ApiFormat::ChatCompletions,
@@ -676,6 +726,7 @@ async fn dropping_native_stream_cancels_source_without_waiting_for_completion() 
         "secret".into(),
         4096,
     );
+
     tokio::time::timeout(std::time::Duration::from_secs(1), output.next())
         .await
         .unwrap()
@@ -714,6 +765,7 @@ async fn native_strips_foreign_reasoning_carriers_before_network() {
     // The upstream address is unroutable, so reaching the network is the proof
     // that translation accepted the carrier instead of rejecting it.
     assert_eq!(result.err().unwrap().status, StatusCode::BAD_GATEWAY);
+
     for (format, body, status) in [
         (
             ApiFormat::Responses,
@@ -760,12 +812,14 @@ async fn native_http_errors_preserve_status_headers_and_redact_credentials() {
             ),
             _ => (StatusCode::OK, "invalid JSON".into()),
         };
+
         (
             status,
             [("retry-after", "7"), ("x-request-id", "req-error")],
             body,
         )
     }));
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -773,7 +827,9 @@ async fn native_http_errors_preserve_status_headers_and_redact_credentials() {
         max_response_bytes: 4096,
         ..Server::default()
     };
+
     let client = http::client(&server).unwrap();
+
     for (path, status) in [
         ("rate", StatusCode::TOO_MANY_REQUESTS),
         ("failed", StatusCode::BAD_GATEWAY),
@@ -798,6 +854,7 @@ async fn native_http_errors_preserve_status_headers_and_redact_credentials() {
         } else {
             ApiFormat::ChatCompletions
         };
+
         let error = provider
             .execute(
                 request(format, "native/model", path == "completed"),
@@ -810,10 +867,12 @@ async fn native_http_errors_preserve_status_headers_and_redact_credentials() {
         assert_eq!(error.headers["retry-after"], "7");
         assert_eq!(error.headers["x-request-id"], "req-error");
         assert!(!error.message.contains("upstream-secret"));
+
         if path == "rate" {
             assert_eq!(error.kind, "rate_limit_error");
         }
     }
+
     task.abort();
 }
 
@@ -824,12 +883,15 @@ fn native_error_mapping_preserves_compaction_and_server_credential_semantics() {
         &json!({"error":{"code":"context_length_exceeded","message":"secret too long"}}),
         "secret",
     );
+
     assert!(
         error
             .message
             .starts_with("capability_rejected: prompt_too_long; ")
     );
+
     assert!(!error.message.contains("secret"));
+
     for status in [
         StatusCode::UNAUTHORIZED,
         StatusCode::FORBIDDEN,
@@ -839,6 +901,7 @@ fn native_error_mapping_preserves_compaction_and_server_credential_semantics() {
         let error = http::upstream_error(status, &json!({"detail":"secret unavailable"}), "secret");
         assert_eq!(error.status, StatusCode::BAD_GATEWAY);
         assert_eq!(error.message, "[redacted] unavailable");
+
         if status.as_u16() >= 500 {
             assert_eq!(error.kind, "overloaded_error");
         }
@@ -933,11 +996,13 @@ async fn anthropic_native_sends_api_key_and_round_trips_thinking_and_unknown_fie
                     echo["type"] = json!("message");
                     (StatusCode::OK, "application/json", echo.to_string())
                 };
+
                 sender.send((uri, headers, body)).await.unwrap();
                 (status, [("content-type", content_type)], payload)
             }
         },
     ));
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -963,6 +1028,7 @@ async fn anthropic_native_sends_api_key_and_round_trips_thinking_and_unknown_fie
         "output_config": {"effort": "high"},
         "provider_extension": {"keep": true},
     });
+
     let output = provider
         .execute(
             ApiRequest::parse(ApiFormat::Anthropic, sent.clone()).unwrap(),
@@ -973,6 +1039,7 @@ async fn anthropic_native_sends_api_key_and_round_trips_thinking_and_unknown_fie
     let ResponseBody::Json(returned) = output.body else {
         panic!("expected JSON")
     };
+
     let (uri, headers, upstream) = receiver.recv().await.unwrap();
     assert_eq!(uri.path(), "/v1/messages");
     assert_eq!(uri.query(), Some("beta=true&value=a%2Fb"));
@@ -1006,6 +1073,7 @@ async fn anthropic_native_sends_api_key_and_round_trips_thinking_and_unknown_fie
     let ResponseBody::Stream(events) = output.body else {
         panic!("expected SSE")
     };
+
     let returned_events = events
         .map(|event| match event.unwrap() {
             ApiEvent::Anthropic(value) => value,
@@ -1034,6 +1102,7 @@ async fn anthropic_native_sends_api_key_and_round_trips_thinking_and_unknown_fie
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
         assert!(receiver.try_recv().is_err());
     }
+
     assert_eq!(
         provider
             .convert_reasoning_effort("claude-sonnet-4-6", "high")
@@ -1093,20 +1162,25 @@ async fn anthropic_subscription_sends_bearer_beta_and_retries_only_one_401() {
                     async move {
                         let call = messages.fetch_add(1, Ordering::SeqCst);
                         sender.send(headers.clone()).await.unwrap();
+
                         if call == 0 {
                             assert_eq!(headers["authorization"], "Bearer access-old");
+
                             return (
                                 StatusCode::UNAUTHORIZED,
                                 Json(json!({"error":{"message":"expired"}})),
                             );
                         }
+
                         assert_eq!(headers["authorization"], "Bearer access-new");
+
                         if call == 2 {
                             return (
                                 StatusCode::FORBIDDEN,
                                 Json(json!({"error":{"message":"denied"}})),
                             );
                         }
+
                         let mut body = body;
                         body["type"] = json!("message");
                         (StatusCode::OK, Json(body))
@@ -1125,6 +1199,7 @@ async fn anthropic_subscription_sends_bearer_beta_and_retries_only_one_401() {
         "refresh-old",
         anthropic::auth::fixture_expiry(),
     );
+
     let server = Server::default();
     let mut provider = anthropic::AnthropicProvider::new(
         serde_json::from_value(json!({
@@ -1143,11 +1218,13 @@ async fn anthropic_subscription_sends_bearer_beta_and_retries_only_one_401() {
         "max_tokens":32,
         "messages":[{"role":"user","content":"hello"}]
     });
+
     let mut subscriber_context = context("claude-sonnet-4-6");
     subscriber_context.headers.insert(
         "user-agent",
         "claude-cli/2.1.300 (external, cli)".parse().unwrap(),
     );
+
     let returned = provider
         .execute(
             ApiRequest::parse(ApiFormat::Anthropic, request.clone()).unwrap(),
@@ -1162,6 +1239,7 @@ async fn anthropic_subscription_sends_bearer_beta_and_retries_only_one_401() {
     let ResponseBody::Json(returned) = returned.body else {
         panic!("expected JSON")
     };
+
     assert_eq!(
         returned["system"],
         json!([{
@@ -1169,6 +1247,7 @@ async fn anthropic_subscription_sends_bearer_beta_and_retries_only_one_401() {
             "text": "x-anthropic-billing-header: cc_version=2.1.300.2d3; cc_entrypoint=sdk-cli; cch=2cf24;"
         }])
     );
+
     {
         let headers = receiver.recv().await.unwrap();
         assert!(!headers.contains_key("x-api-key"));
@@ -1187,9 +1266,11 @@ async fn anthropic_subscription_sends_bearer_beta_and_retries_only_one_401() {
                 .count(),
             1
         );
+
         assert!(!headers.contains_key("x-app"));
         assert!(!headers.contains_key("x-stainless-helper-method"));
     }
+
     let error = match provider
         .execute(
             ApiRequest::parse(ApiFormat::Anthropic, request).unwrap(),
@@ -1200,6 +1281,7 @@ async fn anthropic_subscription_sends_bearer_beta_and_retries_only_one_401() {
         Ok(_) => panic!("403 unexpectedly succeeded"),
         Err(error) => error,
     };
+
     assert_eq!(error.status, StatusCode::BAD_GATEWAY);
     assert_eq!(messages.load(Ordering::SeqCst), 3);
     assert_eq!(refreshes.load(Ordering::SeqCst), 1);
@@ -1264,6 +1346,7 @@ fn anthropic_config_requires_a_tagged_api_key_and_option_free_models() {
         let config = serde_json::from_value::<crate::config::Config>(json!({
             "providers": {"fixture": provider.clone()}
         }));
+
         assert_eq!(
             config.is_ok_and(|config| config.validate().is_ok()),
             valid,
@@ -1277,6 +1360,7 @@ fn anthropic_provider_loads_from_toml_and_yaml() {
     let directory =
         std::env::temp_dir().join(format!("tinyllm-anthropic-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&directory).unwrap();
+
     for (name, text) in [
         (
             "config.toml",
@@ -1297,6 +1381,7 @@ fn anthropic_provider_loads_from_toml_and_yaml() {
         let crate::config::ProviderConfig::Anthropic(provider) = &config.providers["claude"] else {
             panic!("wrong provider variant")
         };
+
         assert_eq!(provider.auth.api_key().unwrap(), "fixture-key");
         assert!(provider.models.contains_key("claude-sonnet-4-6"));
         assert!(provider.base_url.is_none());
@@ -1313,13 +1398,16 @@ fn anthropic_provider_loads_from_toml_and_yaml() {
     let crate::config::ProviderConfig::Anthropic(provider) = &config.providers["anthropic"] else {
         panic!("wrong provider variant")
     };
+
     let anthropic::models::AnthropicAuth::Subscription(options) = &provider.auth else {
         panic!("wrong auth variant")
     };
+
     assert_eq!(
         options.credentials_dir,
         directory.join("state/auth/anthropic")
     );
+
     assert_ne!(options.credentials_dir, directory.join("state/auth"));
 
     std::fs::write(
@@ -1332,9 +1420,11 @@ fn anthropic_provider_loads_from_toml_and_yaml() {
     let crate::config::ProviderConfig::Anthropic(provider) = &config.providers["claude"] else {
         panic!("wrong provider variant")
     };
+
     let anthropic::models::AnthropicAuth::Subscription(options) = &provider.auth else {
         panic!("wrong auth variant")
     };
+
     assert_eq!(options.credentials_dir, directory.join("state/auth/claude"));
 
     std::fs::write(
@@ -1347,9 +1437,11 @@ fn anthropic_provider_loads_from_toml_and_yaml() {
     let crate::config::ProviderConfig::Anthropic(provider) = &config.providers["claude"] else {
         panic!("wrong provider variant")
     };
+
     let anthropic::models::AnthropicAuth::Subscription(options) = &provider.auth else {
         panic!("wrong auth variant")
     };
+
     assert_eq!(options.credentials_dir, directory.join("relative-auth"));
 
     std::fs::write(
@@ -1370,6 +1462,7 @@ fn anthropic_provider_loads_from_toml_and_yaml() {
         Ok(_) => panic!("parent-directory alias unexpectedly loaded"),
         Err(error) => error.to_string(),
     };
+
     assert!(error.contains("must not contain '..'"));
     let _ = std::fs::remove_dir_all(directory);
 }
@@ -1398,6 +1491,7 @@ fn anthropic_credentials_reject_absolute_alias_of_relative_openai_root() {
         Ok(_) => panic!("absolute alias of relative OpenAI root unexpectedly loaded"),
         Err(error) => error.to_string(),
     };
+
     assert!(error.contains("must not use OpenAI's default auth directory"));
     assert!(!absolute_auth.exists());
     std::fs::remove_dir_all(relative_root).unwrap();
@@ -1430,6 +1524,7 @@ fn anthropic_credentials_reject_existing_symlink_ancestor_alias() {
         Ok(_) => panic!("symlink ancestor alias of OpenAI root unexpectedly loaded"),
         Err(error) => error.to_string(),
     };
+
     assert!(error.contains("must not use OpenAI's default auth directory"));
     assert!(!real_auth.exists());
     std::fs::remove_dir_all(root).unwrap();
@@ -1456,6 +1551,7 @@ async fn anthropic_subscription_catalog_retries_one_401_and_rejects_bad_json() {
                         assert_eq!(uri.query(), Some("limit=1000"));
                         assert_eq!(headers["anthropic-beta"], "oauth-2025-04-20");
                         assert_eq!(headers["anthropic-version"], "2023-06-01");
+
                         match call {
                             0 => {
                                 assert_eq!(headers["authorization"], "Bearer access-old");
@@ -1479,12 +1575,14 @@ async fn anthropic_subscription_catalog_retries_one_401_and_rejects_bad_json() {
         "tinyllm-anthropic-catalog-{}",
         uuid::Uuid::new_v4()
     ));
+
     anthropic::auth::save_fixture(
         &directory,
         "access-old",
         "refresh-old",
         anthropic::auth::fixture_expiry(),
     );
+
     let server = Server::default();
     let mut provider = anthropic::AnthropicProvider::new(
         serde_json::from_value(json!({
@@ -1505,6 +1603,7 @@ async fn anthropic_subscription_catalog_retries_one_401_and_rejects_bad_json() {
             .collect::<Vec<_>>(),
         [("claude-opus-5", "Claude Opus 5")]
     );
+
     let error = provider.upstream_models().await.err().unwrap();
     assert_eq!(error.message, "invalid upstream catalog JSON");
     assert_eq!(calls.load(Ordering::SeqCst), 3);
