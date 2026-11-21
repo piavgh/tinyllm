@@ -29,6 +29,7 @@ pub struct KimiProvider {
 impl KimiProvider {
     pub fn new(config: Config, client: Client, server: Server) -> eyre::Result<Self> {
         let auth = Auth::open(&config.auth, config.region)?;
+
         let base = config
             .base_url
             .as_deref()
@@ -37,6 +38,7 @@ impl KimiProvider {
             } else {
                 config.region.platform_api()
             });
+
         let messages = if config.auth.uses_code_api() {
             "/v1/messages"
         } else {
@@ -90,9 +92,11 @@ impl Provider for KimiProvider {
     async fn upstream_models(&self) -> Result<Vec<ModelInfo>> {
         let (mut key, headers) = self.access(None).await?;
         let mut response = http::list(self.catalog_request(&key, headers)?).await?;
+
         if self.auth.is_subscription() && response.status() == StatusCode::UNAUTHORIZED {
             drop(response);
             let headers;
+
             (key, headers) = self.access(Some(&key)).await?;
             response = http::list(self.catalog_request(&key, headers)?).await?;
         }
@@ -124,15 +128,19 @@ impl Provider for KimiProvider {
             .and_then(|value| value.to_str().ok())
             .filter(|_| request.format == ApiFormat::Anthropic)
             .map(str::to_owned);
+
         let mut prepared = http::prepare(url.clone(), request, context, client_agent.as_deref())?;
 
         let (mut key, headers) = self.access(None).await?;
         *prepared.headers_mut() = headers;
+
         let mut response =
             http::send(&self.client, &prepared, HttpAuth::Bearer(&key), None).await?;
+
         if self.auth.is_subscription() && response.status() == StatusCode::UNAUTHORIZED {
             drop(response);
             let headers;
+
             (key, headers) = self.access(Some(&key)).await?;
             *prepared.headers_mut() = headers;
             response = http::send(&self.client, &prepared, HttpAuth::Bearer(&key), None).await?;

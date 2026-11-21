@@ -139,9 +139,11 @@ fn kimi_credentials<'a>(
     let Some(config::ProviderConfig::Kimi(kimi)) = config.providers.get(prefix) else {
         eyre::bail!("login and logout require a configured Kimi provider");
     };
+
     let providers::kimi::models::KimiAuth::Subscription(options) = &kimi.auth else {
         eyre::bail!("set the provider auth.type to Subscription before login or logout");
     };
+
     Ok((&options.credentials_dir, kimi.region))
 }
 
@@ -219,6 +221,7 @@ async fn main() -> eyre::Result<()> {
             };
             let (directory, region) = kimi_credentials(&config, prefix)?;
             let session = providers::kimi::auth::Session::open(directory, region)?;
+
             match command {
                 KimiCommand::Login { headless, .. } => {
                     tokio::select! {

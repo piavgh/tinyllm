@@ -45,6 +45,7 @@ impl Fixture {
 async fn fixture(message_statuses: Vec<u16>) -> Fixture {
     let calls = Calls::default();
     let messages = Arc::new(Mutex::new(0usize));
+
     let app = Router::new().fallback(any({
         let calls = calls.clone();
         move |uri: Uri, headers: HeaderMap, body: axum::body::Bytes| {
@@ -55,19 +56,23 @@ async fn fixture(message_statuses: Vec<u16>) -> Fixture {
                 let path = uri.path().to_owned();
                 calls.lock().unwrap().push((path.clone(), headers));
                 let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+
                 if path.ends_with("/models") {
                     return Json(json!({"data":[{"id":"k3"}]})).into_response();
                 }
+
                 if path == "/api/oauth/token" {
                     return Json(json!({
                         "access_token":"a2","refresh_token":"r2","expires_in":3600
                     }))
                     .into_response();
                 }
+
                 if path.ends_with("/messages") {
                     let mut seen = messages.lock().unwrap();
                     let status = statuses[(*seen).min(statuses.len() - 1)];
                     *seen += 1;
+
                     if status != 200 {
                         return (
                             StatusCode::from_u16(status).unwrap(),
@@ -76,6 +81,7 @@ async fn fixture(message_statuses: Vec<u16>) -> Fixture {
                             .into_response();
                     }
                 }
+
                 if body["stream"] == true {
                     let wire = format!(
                         "data: {}\n\ndata: {}\n\n",
@@ -85,6 +91,7 @@ async fn fixture(message_statuses: Vec<u16>) -> Fixture {
                     return ([("content-type", "text/event-stream")], Body::from(wire))
                         .into_response();
                 }
+
                 Json(json!({"model":"k3","status":"completed","content":[]})).into_response()
             }
         }
@@ -102,6 +109,7 @@ fn directory() -> PathBuf {
 
 fn context(user_agent: Option<&str>) -> RequestContext {
     let mut headers = HeaderMap::new();
+
     if let Some(user_agent) = user_agent {
         headers.insert("user-agent", user_agent.parse().unwrap());
     }
@@ -192,6 +200,7 @@ async fn kimi_routes_each_format_per_auth_type() {
         Some(moonshot.base.clone()),
         Region::Global,
     ));
+
     send_all(&provider_moonshot).await;
     assert_calls(
         &moonshot,
@@ -210,6 +219,7 @@ async fn kimi_routes_each_format_per_auth_type() {
         Some(format!("{}/coding", console.base)),
         Region::Global,
     ));
+
     send_all(&provider_console).await;
     assert_calls(
         &console,
@@ -229,6 +239,7 @@ async fn kimi_routes_each_format_per_auth_type() {
         Some(format!("{}/coding", sub.base)),
         Region::Global,
     ));
+
     send_all(&provider_sub).await;
     assert_calls(
         &sub,
@@ -308,6 +319,7 @@ async fn kimi_user_agent_follows_cliproxyapi() {
         Some(upstream.base.clone()),
         Region::Global,
     ));
+
     let client_agent = "claude-cli/2.1.300 (external, cli)";
 
     provider
@@ -429,6 +441,29 @@ async fn kimi_catalog_uses_models_path_and_identity_headers() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn kimi_api_key_catalogs_carry_no_identity_headers() {
+    for auth in [
+        json!({"type":"ApiKey","options":"k"}),
+        json!({"type":"MoonshotApiKey","options":"k"}),
+    ] {
+        let upstream = fixture(vec![200]).await;
+        let provider = provider(config(auth, Some(upstream.base.clone()), Region::Global));
+
+        provider.upstream_models().await.unwrap();
+
+        let headers = upstream.headers(0);
+        assert_eq!(headers["authorization"], "Bearer k");
+        assert!(
+            headers
+                .keys()
+                .all(|name| !name.as_str().starts_with("x-msh-"))
+        );
+
+        upstream.task.abort();
+    }
+}
+
 fn load(dir: &Path, text: &str) -> eyre::Result<crate::config::Config> {
     let path = dir.join("config.toml");
     std::fs::write(&path, format!("[server]\nstate_dir = 'state'\n{text}")).unwrap();
@@ -503,6 +538,27 @@ fn kimi_config_loads_defaults_and_rejects_bad_settings() {
         )
         .is_ok()
     );
+
+    let error = load(
+        &dir,
+        "[providers.kimi]\ntype = 'kimi'\n[providers.kimi.auth]\ntype = 'Subscription'\n\
+         [providers.kimi.auth.options]\ncredentials_dir = 'state/../kimi'\n",
+    )
+    .err()
+    .unwrap();
+    assert!(
+        error.to_string().contains("must not contain '..'"),
+        "{error}"
+    );
+
+    let error = load(
+        &dir,
+        "[providers.kimi]\ntype = 'kimi'\n[providers.kimi.auth]\ntype = 'Subscription'\n\
+         [providers.kimi.auth.options]\ncredentials_dir = 'state/auth'\n",
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("shared auth root"), "{error}");
 
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -165,18 +165,23 @@ impl Config {
                                 "Kimi credentials_dir must not contain '..'; use the direct directory path"
                             );
                         }
+
                         if path_identity(&options.credentials_dir)?
                             == path_identity(&self.server.state_dir.join("auth"))?
                         {
-                            bail!("Kimi credentials must not use OpenAI's default auth directory");
+                            bail!(
+                                "Kimi credentials_dir must not be the shared auth root (server.state_dir/auth)"
+                            );
                         }
                     } else {
                         c.auth.api_key()?;
                     }
+
                     if c.auth.uses_code_api() {
                         let code_api = c.region.code_api();
                         let base = c.base_url.as_deref().unwrap_or(code_api);
                         let local = validate_url(base)?;
+
                         if !local && base.trim_end_matches('/') != code_api {
                             bail!(
                                 "Kimi Code auth requires the region's Kimi Code API (loopback allowed for fixtures)"
@@ -185,6 +190,7 @@ impl Config {
                     } else if let Some(url) = &c.base_url {
                         validate_url(url)?;
                     }
+
                     for id in c.models.keys() {
                         validate_model(id)?;
                     }
@@ -309,15 +315,15 @@ fn path_identity(path: &Path) -> Result<PathBuf> {
         match ancestor.canonicalize() {
             Ok(path) => break path,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let name = ancestor.file_name().ok_or_else(|| {
-                    eyre::eyre!("cannot resolve Anthropic credential path identity")
-                })?;
+                let name = ancestor
+                    .file_name()
+                    .ok_or_else(|| eyre::eyre!("cannot resolve credential path identity"))?;
                 missing.push(name.to_owned());
-                ancestor = ancestor.parent().ok_or_else(|| {
-                    eyre::eyre!("cannot resolve Anthropic credential path identity")
-                })?;
+                ancestor = ancestor
+                    .parent()
+                    .ok_or_else(|| eyre::eyre!("cannot resolve credential path identity"))?;
             }
-            Err(_) => bail!("cannot resolve Anthropic credential path identity"),
+            Err(_) => bail!("cannot resolve credential path identity"),
         }
     };
     Ok(missing

@@ -90,8 +90,9 @@ format = "compact"
 # Rename or add instances as needed; use openai login --provider NAME for subscriptions.
 # base_url values are API roots: endpoint paths are appended automatically.
 # HTTPS is required, except HTTP on loopback; no credentials/query/fragment in URLs.
-# Every provider except kimi accepts an optional user_agent override for upstream inference requests;
-# omitting it sends tinyllm/<version>. This changes only the User-Agent header.
+# Every provider except kimi accepts an optional user_agent override for upstream
+# inference requests; omitting it sends tinyllm/<version>. This changes only the
+# User-Agent header.
 
 [providers.openai]
 # Supported types: openai, openrouter, zai, anthropic, kimi (lowercase, case-sensitive).
@@ -219,6 +220,7 @@ reasoning_effort = "medium"
 # [providers.kimi]
 # type = "kimi"
 # region = "global"
+# base_url = "https://api.moonshot.ai" # MoonshotApiKey only; host root, no /v1.
 # [providers.kimi.auth]
 # Choose one type. Subscription needs `tinyllm kimi login` first (add --provider
 # NAME for renamed tables). Default credentials: server.state_dir/auth/PROVIDER/kimi.json.
@@ -228,7 +230,7 @@ reasoning_effort = "medium"
 # ApiKey is a Kimi Code Console key (kimi.com/code), billed to the membership.
 # It is not pay-per-use. Replace the two lines above with:
 # type = "ApiKey"
-# options = "${KIMI_API_KEY:-}"
+# options = "${KIMI_CODE_API_KEY:-}"
 #
 # MoonshotApiKey is a Kimi API Platform key (platform.kimi.ai), pay per use.
 # It is a different account system, so the two keys cannot be swapped:

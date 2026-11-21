@@ -19,6 +19,7 @@ async fn server(router: Router) -> (String, tokio::task::JoinHandle<()>) {
     let task = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
+
     (url, task)
 }
 
@@ -115,6 +116,7 @@ async fn device_login_polls_until_approved_and_saves_private_credentials() {
             ),
     )
     .await;
+
     let path = directory();
     let session = login_session(&path, host);
     session.login(true).await.unwrap();
@@ -123,6 +125,7 @@ async fn device_login_polls_until_approved_and_saves_private_credentials() {
     assert_eq!(file["access_token"], "a1");
     assert_eq!(file["refresh_token"], "r1");
     assert_eq!(file["region"], "global");
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -142,7 +145,13 @@ async fn device_login_polls_until_approved_and_saves_private_credentials() {
         assert_eq!(form["grant_type"], DEVICE_GRANT);
         assert_eq!(form["client_id"], "17e5f671-d194-4dfb-9706-5516cb48c098");
     }
+
     let device_seen = device_seen.lock().unwrap();
+    assert_eq!(
+        device_seen[0].0["client_id"],
+        "17e5f671-d194-4dfb-9706-5516cb48c098"
+    );
+
     for (_, headers) in seen.iter().chain(device_seen.iter()) {
         assert_eq!(headers["x-msh-platform"], "tinyllm");
         assert_eq!(
@@ -150,6 +159,7 @@ async fn device_login_polls_until_approved_and_saves_private_credentials() {
             file["device_id"].as_str().unwrap()
         );
     }
+
     task.abort();
     drop(session);
     std::fs::remove_dir_all(path).unwrap();
@@ -176,11 +186,14 @@ async fn device_login_stops_on_access_denied_or_empty_answer() {
                 ),
         )
         .await;
+
         let path = directory();
         let session = login_session(&path, host);
+
         let error = session.login(true).await.unwrap_err().to_string();
         assert!(error.contains(expected), "{error}");
         assert_eq!(seen.lock().unwrap().len(), 1);
+
         task.abort();
         drop(session);
         std::fs::remove_dir_all(path).unwrap();
@@ -201,14 +214,17 @@ async fn device_login_stops_when_code_expires() {
             .route("/api/oauth/token", token_route(seen, vec![pending()])),
     )
     .await;
+
     let path = directory();
     let session = login_session(&path, host);
+
     let error = tokio::time::timeout(Duration::from_secs(2), session.login(true))
         .await
         .unwrap()
         .unwrap_err()
         .to_string();
     assert!(error.contains("expired"), "{error}");
+
     task.abort();
     drop(session);
     std::fs::remove_dir_all(path).unwrap();
@@ -248,6 +264,7 @@ async fn refresh_near_expiry_keeps_device_and_old_refresh_token() {
         ),
     ))
     .await;
+
     let path = directory();
     save_fixture(&path, "a-old", "r-old", 1, "dev-1", Region::Global);
     let mut auth = Auth::open(&subscription(&path), Region::Global).unwrap();
@@ -260,6 +277,10 @@ async fn refresh_near_expiry_keeps_device_and_old_refresh_token() {
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].0["grant_type"], "refresh_token");
+    assert_eq!(
+        seen[0].0["client_id"],
+        "17e5f671-d194-4dfb-9706-5516cb48c098"
+    );
     assert_eq!(seen[0].0["refresh_token"], "r-old");
     assert_eq!(seen[0].1["x-msh-device-id"], "dev-1");
 
@@ -267,6 +288,7 @@ async fn refresh_near_expiry_keeps_device_and_old_refresh_token() {
     assert_eq!(file["access_token"], "a-new");
     assert_eq!(file["refresh_token"], "r-old");
     assert_eq!(file["device_id"], "dev-1");
+
     task.abort();
     drop(auth);
     std::fs::remove_dir_all(path).unwrap();
@@ -280,6 +302,7 @@ async fn unknown_expiry_refreshes_only_after_rejection() {
         token_route(seen.clone(), vec![(200, json!({"access_token":"a-new"}))]),
     ))
     .await;
+
     let path = directory();
     save_fixture(&path, "a-old", "r-old", 0, "dev-1", Region::Global);
     let mut auth = Auth::open(&subscription(&path), Region::Global).unwrap();
@@ -291,6 +314,7 @@ async fn unknown_expiry_refreshes_only_after_rejection() {
     assert_eq!(auth.access(Some("a-old")).await.unwrap().0, "a-new");
     assert_eq!(seen.lock().unwrap().len(), 1);
     assert_eq!(saved(&path)["expires_at"], 0);
+
     task.abort();
     drop(auth);
     std::fs::remove_dir_all(path).unwrap();
@@ -303,6 +327,7 @@ async fn refresh_rejected_asks_for_login() {
         post(|| async { StatusCode::UNAUTHORIZED }),
     ))
     .await;
+
     let path = directory();
     save_fixture(&path, "a-old", "r-old", 1, "dev-1", Region::Global);
     let mut auth = Auth::open(&subscription(&path), Region::Global).unwrap();
@@ -310,8 +335,68 @@ async fn refresh_rejected_asks_for_login() {
 
     let error = auth.access(None).await.unwrap_err().to_string();
     assert!(error.contains("run tinyllm kimi login again"), "{error}");
+
     task.abort();
     drop(auth);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[tokio::test]
+async fn refresh_invalid_grant_asks_for_login_at_any_status() {
+    for status in [400, 200] {
+        let (host, task) = server(Router::new().route(
+            "/api/oauth/token",
+            token_route(
+                Default::default(),
+                vec![(status, json!({"error":"invalid_grant"}))],
+            ),
+        ))
+        .await;
+
+        let path = directory();
+        save_fixture(&path, "a-old", "r-old", 1, "dev-1", Region::Global);
+
+        let mut auth = Auth::open(&subscription(&path), Region::Global).unwrap();
+        auth.set_auth_host(host);
+
+        let error = auth.access(None).await.unwrap_err().to_string();
+        assert!(error.contains("run tinyllm kimi login again"), "{error}");
+
+        task.abort();
+        drop(auth);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn device_login_survives_huge_interval() {
+    let (host, task) = server(
+        Router::new()
+            .route(
+                "/api/oauth/device_authorization",
+                device_route(
+                    json!({"device_code":"dc","user_code":"UC","expires_in":0.05,"interval":1e20}),
+                ),
+            )
+            .route(
+                "/api/oauth/token",
+                token_route(Default::default(), vec![pending()]),
+            ),
+    )
+    .await;
+
+    let path = directory();
+    let session = login_session(&path, host);
+
+    let error = tokio::time::timeout(Duration::from_secs(2), session.login(true))
+        .await
+        .unwrap()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("expired"), "{error}");
+
+    task.abort();
+    drop(session);
     std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -335,13 +420,16 @@ fn corrupt_or_old_credentials_ask_for_login() {
     ] {
         let path = directory();
         drop(Session::open(&path, Region::Global).unwrap());
+
         let file = path.join("kimi.json");
         std::fs::write(&file, content).unwrap();
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
+
         let error = Auth::open(&subscription(&path), Region::Global)
             .err()
             .unwrap()
@@ -372,6 +460,7 @@ fn missing_credentials_and_logout_are_handled() {
         .unwrap();
     session.logout().unwrap();
     session.logout().unwrap();
+
     assert!(session.load().unwrap().is_none());
     drop(session);
     std::fs::remove_dir_all(path).unwrap();
@@ -396,8 +485,10 @@ fn session_defaults_to_region_oauth_host() {
     let china = Session::open(&path, Region::China).unwrap();
     assert_eq!(china.auth_host, "https://auth.kimi.com");
     drop(china);
+
     let global = Session::open(&path, Region::Global).unwrap();
     assert_eq!(global.auth_host, "https://auth.kimi.ai");
     drop(global);
+
     std::fs::remove_dir_all(path).unwrap();
 }

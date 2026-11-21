@@ -185,11 +185,13 @@ impl Session {
     pub fn open(directory: &Path, region: Region) -> Result<Self> {
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
             builder.mode(0o700);
         }
+
         builder
             .create(directory)
             .wrap_err_with(|| "cannot create Kimi subscription credential directory")?;
@@ -204,11 +206,13 @@ impl Session {
 
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
+
         let lock = options
             .open(lock_path)
             .wrap_err_with(|| "cannot open Kimi subscription credential lock")?;
@@ -252,6 +256,7 @@ impl Session {
 
     fn load(&self) -> Result<Option<Credentials>> {
         let path = self.path();
+
         if !path.try_exists()? {
             return Ok(None);
         }
@@ -261,6 +266,7 @@ impl Session {
         File::open(path)?
             .take(MAX_AUTH_BYTES as u64 + 1)
             .read_to_end(&mut bytes)?;
+
         if bytes.len() > MAX_AUTH_BYTES {
             bail!("Kimi subscription credential file exceeds 64 KiB");
         }
@@ -268,6 +274,7 @@ impl Session {
         let invalid = || eyre::eyre!("invalid Kimi subscription credential file; {LOGIN_AGAIN}");
         let credentials: Credentials = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
         credentials.validate().map_err(|_| invalid())?;
+
         if credentials.region != self.region {
             bail!(
                 "Kimi credentials were saved for region {}; {LOGIN_AGAIN}",
@@ -280,7 +287,9 @@ impl Session {
 
     fn save(&self, credentials: &Credentials) -> Result<()> {
         credentials.validate()?;
+
         let bytes = serde_json::to_vec(credentials)?;
+
         if bytes.len() > MAX_AUTH_BYTES {
             bail!("Kimi subscription credentials exceed 64 KiB");
         }
@@ -291,20 +300,24 @@ impl Session {
         let result = (|| -> Result<()> {
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
+
             #[cfg(unix)]
             {
                 use std::os::unix::fs::OpenOptionsExt;
                 options.mode(0o600);
             }
+
             let mut file = options.open(&temporary)?;
             file.write_all(&bytes)?;
             file.sync_all()?;
             std::fs::rename(&temporary, self.path())?;
+
             #[cfg(unix)]
             File::open(&self.directory)?.sync_all()?;
 
             Ok(())
         })();
+
         if result.is_err() {
             let _ = std::fs::remove_file(temporary);
         }
@@ -323,12 +336,14 @@ impl Session {
                     .ok_or_eyre("no Kimi subscription credentials; run tinyllm kimi login")?,
             );
         }
+
         if state.unsaved {
             self.save(state.current.as_ref().unwrap())?;
             state.unsaved = false;
         }
 
         let credentials = state.current.as_ref().unwrap();
+
         if (credentials.expires_at != 0 && credentials.expires_at <= now() + REFRESH_LEAD)
             || rejected == Some(credentials.access_token.as_str())
         {
@@ -345,12 +360,17 @@ impl Session {
                 .await
                 .map_err(|_| eyre::eyre!("cannot connect to Kimi for subscription refresh"))?;
             let (status, body) = read_token(response).await?;
-            if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+
+            let dead_grant = body
+                .as_ref()
+                .is_some_and(|body| body.error.as_deref() == Some("invalid_grant"));
+            if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN || dead_grant {
                 bail!(
                     "Kimi subscription refresh was rejected (HTTP {}); {LOGIN_AGAIN}",
                     status.as_u16()
                 );
             }
+
             if !status.is_success() {
                 bail!(
                     "Kimi subscription refresh failed (HTTP {})",
@@ -365,6 +385,7 @@ impl Session {
                 &credentials.device_id,
                 credentials.region,
             )?;
+
             state.current = Some(refreshed);
             state.unsaved = true;
             self.save(state.current.as_ref().unwrap())?;
@@ -391,13 +412,16 @@ impl Session {
             .send()
             .await
             .map_err(|_| eyre::eyre!("cannot connect to Kimi for device login"))?;
+
         let (status, bytes) = read_body(response).await?;
+
         if !status.is_success() {
             bail!(
                 "Kimi device authorization failed (HTTP {})",
                 status.as_u16()
             );
         }
+
         let code: DeviceCode = serde_json::from_slice(&bytes)
             .map_err(|_| eyre::eyre!("invalid Kimi device authorization response"))?;
 
@@ -406,6 +430,7 @@ impl Session {
             "Open this URL in your browser to sign in:\n\n{url}\n\nCode: {}\n",
             code.user_code
         );
+
         if url.starts_with("https://") {
             crate::providers::browser::open(&url, headless);
         }
@@ -414,13 +439,18 @@ impl Session {
             .expires_in
             .unwrap_or(MAX_DEVICE_SECONDS)
             .min(MAX_DEVICE_SECONDS);
+
         let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(wait.max(0.0));
-        let interval = Duration::from_secs_f64(code.interval.unwrap_or(5.0).max(0.0));
+        let interval =
+            Duration::from_secs_f64(code.interval.unwrap_or(5.0).clamp(0.0, MAX_DEVICE_SECONDS));
+        let pause = interval.max(self.poll_floor);
+
         loop {
-            if tokio::time::Instant::now() >= deadline {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
                 bail!("Kimi device code expired; {LOGIN_AGAIN}");
             }
-            tokio::time::sleep(interval.max(self.poll_floor)).await;
+            tokio::time::sleep(pause.min(deadline - now)).await;
 
             let response = self
                 .client
@@ -443,9 +473,6 @@ impl Session {
                 Some("authorization_pending" | "slow_down") => continue,
                 Some(error) => bail!("Kimi login failed: {error}"),
                 None => {}
-            }
-            if body.access_token.is_none() {
-                bail!("Kimi OAuth response omitted the access token");
             }
 
             let credentials = Credentials::from_response(body, None, &device_id, self.region)?;

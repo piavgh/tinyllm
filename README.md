@@ -1,8 +1,8 @@
 # tinyllm
 
 A small Rust gateway that lets Claude Code use OpenAI, OpenRouter, Z.ai,
-Anthropic and Kimi models. Claude Code keeps control of tools, MCP connections, permissions,
-background shells and subagents; tinyllm translates the API traffic.
+Anthropic and Kimi models. Claude Code keeps control of tools, MCP connections,
+permissions, background shells and subagents; tinyllm translates the API traffic.
 
 ## What it supports
 
@@ -107,9 +107,13 @@ and billing treatment remain Anthropic policy decisions; login does not guarante
 any of them. Your local gateway token is never forwarded.
 That file documents all server, logging, provider and model options.
 
-#### Kimi
+Use `tinyllm --config /path/to/config.toml` to select another config; YAML is also
+supported. Environment variables expand before parsing, including in comments.
+Relative paths resolve beside the config file; use absolute paths instead of `~`.
+Restart after editing. Set `server.auth_token` to require a local gateway token;
+omitting it disables authentication. Upstream credentials stay on the server.
 
-The `kimi` provider has three `auth.type` values:
+Kimi uses the same tagged `auth` block, with three `auth.type` values:
 
 - `ApiKey`: a key from the Kimi Code Console (kimi.com/code). It is billed to your
   Kimi Code membership. Unlike `ApiKey` in `openai` and `anthropic`, it is not pay-per-use.
@@ -117,6 +121,8 @@ The `kimi` provider has three `auth.type` values:
   platform.moonshot.ai). It is pay per use.
 - `Subscription`: run `tinyllm kimi login [--headless] [--provider NAME]`. Open the
   printed URL on any device and enter the code. `--headless` skips the browser launch.
+  `tinyllm kimi logout` removes the local login. Stop the gateway before login or
+  logout, because the credentials are locked while it runs.
 
 The two key kinds come from separate account systems. One cannot replace the other.
 
@@ -125,14 +131,9 @@ it, log in again.
 
 The `kimi` provider sends the real client identity: the client's `User-Agent` on
 Messages requests, otherwise `tinyllm/<version>`, plus device headers such as
-`X-Msh-Platform: tinyllm` for subscriptions. It has no `user_agent` option. Kimi asks
+`X-Msh-Platform: tinyllm` for subscriptions. The machine hostname goes to Kimi as
+`X-Msh-Device-Name` for subscriptions. It has no `user_agent` option. Kimi asks
 third-party tools to keep their real client identity, so tinyllm never fakes it.
-
-Use `tinyllm --config /path/to/config.toml` to select another config; YAML is also
-supported. Environment variables expand before parsing, including in comments.
-Relative paths resolve beside the config file; use absolute paths instead of `~`.
-Restart after editing. Set `server.auth_token` to require a local gateway token;
-omitting it disables authentication. Upstream credentials stay on the server.
 
 ### Connect Claude Code
 
