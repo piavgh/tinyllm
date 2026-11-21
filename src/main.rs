@@ -36,6 +36,7 @@ impl Cli {
         if let Some(path) = &self.config {
             return Ok(path.clone());
         }
+
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
@@ -58,6 +59,12 @@ enum Command {
         about = "Manage Anthropic subscription authentication"
     )]
     Anthropic(AnthropicCommand),
+    #[command(
+        name = "kimi",
+        subcommand,
+        about = "Manage Kimi subscription authentication"
+    )]
+    Kimi(KimiCommand),
 }
 
 #[derive(Subcommand)]
@@ -97,6 +104,22 @@ enum AnthropicCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum KimiCommand {
+    /// Sign in with a Kimi subscription.
+    Login {
+        #[arg(long, help = "Print the login URL without opening a browser")]
+        headless: bool,
+        #[arg(long, default_value = "kimi")]
+        provider: String,
+    },
+    /// Remove tinyllm's locally stored Kimi subscription credentials.
+    Logout {
+        #[arg(long, default_value = "kimi")]
+        provider: String,
+    },
+}
+
 fn anthropic_credentials_dir<'a>(
     config: &'a config::Config,
     prefix: &str,
@@ -104,23 +127,44 @@ fn anthropic_credentials_dir<'a>(
     let Some(config::ProviderConfig::Anthropic(anthropic)) = config.providers.get(prefix) else {
         eyre::bail!("login and logout require a configured Anthropic provider");
     };
+
     let providers::anthropic::models::AnthropicAuth::Subscription(options) = &anthropic.auth else {
         eyre::bail!("set the provider auth.type to Subscription before login or logout");
     };
+
     Ok(&options.credentials_dir)
+}
+
+fn kimi_credentials<'a>(
+    config: &'a config::Config,
+    prefix: &str,
+) -> eyre::Result<(&'a std::path::Path, providers::kimi::models::Region)> {
+    let Some(config::ProviderConfig::Kimi(kimi)) = config.providers.get(prefix) else {
+        eyre::bail!("login and logout require a configured Kimi provider");
+    };
+
+    let providers::kimi::models::KimiAuth::Subscription(options) = &kimi.auth else {
+        eyre::bail!("set the provider auth.type to Subscription before login or logout");
+    };
+
+    Ok((&options.credentials_dir, kimi.region))
 }
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let cli = Cli::parse();
     let mut config = config::Config::load(&cli.config_path()?)?;
+
     if let Some(level) = cli.log_level {
         config.logging.level = level;
     }
+
     if let Some(format) = cli.log_format {
         config.logging.format = format;
     }
+
     logging::init(&config.logging)?;
+
     match cli.command {
         Some(Command::OpenAi(command)) => {
             let prefix = match &command {
@@ -128,13 +172,17 @@ async fn main() -> eyre::Result<()> {
                     provider
                 }
             };
+
             let Some(config::ProviderConfig::OpenAi(openai)) = config.providers.get(prefix) else {
                 eyre::bail!("login and logout require a configured OpenAI provider");
             };
+
             let providers::openai::models::OpenAiAuth::Subscription(options) = &openai.auth else {
                 eyre::bail!("set the provider auth.type to Subscription before login or logout");
             };
+
             let session = providers::openai::auth::Session::open(&options.credentials_dir)?;
+
             match command {
                 OpenAiCommand::Login {
                     device_auth,
@@ -145,6 +193,7 @@ async fn main() -> eyre::Result<()> {
                         result = session.login(device_auth, headless) => result?,
                         _ = tokio::signal::ctrl_c() => eyre::bail!("login cancelled"),
                     }
+
                     println!("Subscription login saved. Start tinyllm with the same config.");
                 }
                 OpenAiCommand::Logout { .. } => {
@@ -152,6 +201,7 @@ async fn main() -> eyre::Result<()> {
                     println!("Local subscription credentials removed.");
                 }
             }
+
             return Ok(());
         }
         Some(Command::Anthropic(command)) => {
@@ -159,14 +209,17 @@ async fn main() -> eyre::Result<()> {
                 AnthropicCommand::Login { provider, .. }
                 | AnthropicCommand::Logout { provider } => provider,
             };
+
             let directory = anthropic_credentials_dir(&config, prefix)?;
             let session = providers::anthropic::auth::Session::open(directory)?;
+
             match command {
                 AnthropicCommand::Login { headless, .. } => {
                     tokio::select! {
                         result = session.login(headless) => result?,
                         _ = tokio::signal::ctrl_c() => eyre::bail!("login cancelled"),
                     }
+
                     println!(
                         "Anthropic subscription login saved. Start tinyllm with the same config."
                     );
@@ -176,10 +229,37 @@ async fn main() -> eyre::Result<()> {
                     println!("Local Anthropic subscription credentials removed.");
                 }
             }
+
+            return Ok(());
+        }
+        Some(Command::Kimi(command)) => {
+            let prefix = match &command {
+                KimiCommand::Login { provider, .. } | KimiCommand::Logout { provider } => provider,
+            };
+
+            let (directory, region) = kimi_credentials(&config, prefix)?;
+            let session = providers::kimi::auth::Session::open(directory, region)?;
+
+            match command {
+                KimiCommand::Login { headless, .. } => {
+                    tokio::select! {
+                        result = session.login(headless) => result?,
+                        _ = tokio::signal::ctrl_c() => eyre::bail!("login cancelled"),
+                    }
+
+                    println!("Kimi subscription login saved. Start tinyllm with the same config.");
+                }
+                KimiCommand::Logout { .. } => {
+                    session.logout()?;
+                    println!("Local Kimi subscription credentials removed.");
+                }
+            }
+
             return Ok(());
         }
         None => {}
     }
+
     let bind = config.server.bind;
     let app = server::router(config).await?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -191,10 +271,12 @@ async fn main() -> eyre::Result<()> {
             signal(SignalKind::terminate())?,
         )
     };
+
     tracing::info!(
         address = %format_args!("http://{}/anthropic", listener.local_addr()?),
         "tinyllm listening"
     );
+
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             #[cfg(unix)]
@@ -208,6 +290,7 @@ async fn main() -> eyre::Result<()> {
         })
         .await?;
     tracing::info!("server stopped");
+
     Ok(())
 }
 
@@ -217,6 +300,7 @@ mod tests {
     fn cli_version_includes_commit_and_build_date() {
         use super::Cli;
         use clap::{Parser, error::ErrorKind};
+
         for flag in ["--version", "-V"] {
             let error = Cli::try_parse_from(["tinyllm", "--config", "missing.toml", flag])
                 .err()
@@ -232,6 +316,7 @@ mod tests {
                 commit == "unknown"
                     || (commit.len() == 7 && commit.bytes().all(|b| b.is_ascii_hexdigit()))
             );
+
             assert_eq!(date.len(), 20);
             assert!(date.bytes().enumerate().all(|(i, b)| match i {
                 4 | 7 => b == b'-',
@@ -259,6 +344,7 @@ mod tests {
             anthropic_credentials_dir(&subscription, "claude").unwrap(),
             std::path::Path::new("private")
         );
+
         assert!(anthropic_credentials_dir(&subscription, "anthropic").is_err());
 
         let api_key: tinyllm::config::Config = serde_json::from_value(serde_json::json!({
@@ -274,6 +360,44 @@ mod tests {
     }
 
     #[test]
+    fn kimi_cli_parses_and_requires_subscription_provider_type() {
+        use super::{Cli, Command, KimiCommand, kimi_credentials};
+        use clap::Parser;
+        use tinyllm::providers::kimi::models::Region;
+
+        let cli =
+            Cli::try_parse_from(["tinyllm", "kimi", "login", "--headless", "--provider", "k2"])
+                .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Kimi(KimiCommand::Login { headless: true, provider })) if provider == "k2"
+        ));
+
+        let cli = Cli::try_parse_from(["tinyllm", "kimi", "logout"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Kimi(KimiCommand::Logout { provider })) if provider == "kimi"
+        ));
+
+        let subscription: tinyllm::config::Config = serde_json::from_value(serde_json::json!({
+            "providers": {
+                "k2": {
+                    "type":"kimi",
+                    "region":"china",
+                    "auth":{"type":"Subscription","options":{"credentials_dir":"private"}}
+                },
+                "kimi": {"type":"kimi","auth":{"type":"ApiKey","options":"fixture-key"}}
+            }
+        }))
+        .unwrap();
+        let (directory, region) = kimi_credentials(&subscription, "k2").unwrap();
+        assert_eq!(directory, std::path::Path::new("private"));
+        assert_eq!(region, Region::China);
+        assert!(kimi_credentials(&subscription, "kimi").is_err());
+        assert!(kimi_credentials(&subscription, "missing").is_err());
+    }
+
+    #[test]
     fn cli_accepts_config_paths_and_reports_usage() {
         use super::{AnthropicCommand, Cli, Command, OpenAiCommand};
         use clap::{Parser, error::ErrorKind};
@@ -285,7 +409,9 @@ mod tests {
             std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
                 .join(".config/tinyllm/config.toml")
         );
+
         assert!(Cli::try_parse_from(["tinyllm"]).unwrap().command.is_none());
+
         for flag in ["-c", "--config"] {
             assert_eq!(
                 Cli::try_parse_from(["tinyllm", flag, "config with spaces.yaml"])
@@ -295,6 +421,7 @@ mod tests {
                 std::path::Path::new("config with spaces.yaml")
             );
         }
+
         for args in [
             vec![
                 "tinyllm",
@@ -317,6 +444,7 @@ mod tests {
             } else {
                 "openai"
             };
+
             let cli = Cli::try_parse_from(args).unwrap();
             assert!(matches!(&cli.command,
                 Some(Command::OpenAi(OpenAiCommand::Login {
@@ -329,16 +457,20 @@ mod tests {
                 std::path::Path::new("subscription.yaml")
             );
         }
+
         for provider in [None, Some("codex")] {
             for action in ["login", "logout"] {
                 let mut args = vec!["tinyllm", "openai", action];
+
                 if let Some(provider) = provider {
                     args.extend(["--provider", provider]);
                 }
+
                 let Some(Command::OpenAi(command)) = Cli::try_parse_from(args).unwrap().command
                 else {
                     panic!("expected OpenAI command")
                 };
+
                 let selected = match (action, command) {
                     (
                         "login",
@@ -351,19 +483,24 @@ mod tests {
                     | ("logout", OpenAiCommand::Logout { provider }) => provider,
                     _ => panic!("wrong OpenAI command"),
                 };
+
                 assert_eq!(selected, provider.unwrap_or("openai"));
             }
         }
+
         for provider in [None, Some("claude")] {
             for action in ["login", "logout"] {
                 let mut args = vec!["tinyllm", "anthropic", action];
+
                 if let Some(provider) = provider {
                     args.extend(["--provider", provider]);
                 }
+
                 let Some(Command::Anthropic(command)) = Cli::try_parse_from(args).unwrap().command
                 else {
                     panic!("expected Anthropic command")
                 };
+
                 let selected = match (action, command) {
                     (
                         "login",
@@ -375,9 +512,11 @@ mod tests {
                     | ("logout", AnthropicCommand::Logout { provider }) => provider,
                     _ => panic!("wrong Anthropic command"),
                 };
+
                 assert_eq!(selected, provider.unwrap_or("anthropic"));
             }
         }
+
         for args in [
             vec![
                 "tinyllm",
@@ -405,11 +544,13 @@ mod tests {
                     Some(Command::Anthropic(AnthropicCommand::Logout { .. }))
                 )
             );
+
             assert_eq!(
                 cli.config_path().unwrap(),
                 std::path::Path::new("subscription.yaml")
             );
         }
+
         for args in [
             vec!["tinyllm", "anthropic"],
             vec!["tinyllm", "openai"],
@@ -418,6 +559,7 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
+
         for args in [
             vec!["tinyllm", "anthropic", "--help"],
             vec!["tinyllm", "anthropic", "login", "--help"],
@@ -431,6 +573,7 @@ mod tests {
                 ErrorKind::DisplayHelp
             );
         }
+
         for (flag, expected) in [
             ("--help", ErrorKind::DisplayHelp),
             ("--version", ErrorKind::DisplayVersion),

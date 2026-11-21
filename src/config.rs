@@ -1,6 +1,7 @@
 pub use crate::models::config::{Config, ProviderConfig, Server};
 use crate::providers::{
     anthropic::{billing, models::AnthropicAuth},
+    kimi::models::KimiAuth,
     openai::models::OpenAiAuth,
 };
 use eyre::{Result, WrapErr, bail};
@@ -13,10 +14,12 @@ impl Config {
             Some("yaml" | "yml") => ::config::FileFormat::Yaml,
             _ => bail!("config file must have a .toml, .yaml or .yml extension"),
         };
+
         let text = std::fs::read_to_string(path).wrap_err_with(|| "cannot read config file")?;
         let rendered = shellexpand::env(&text).map_err(|_| {
             eyre::eyre!("cannot expand config: referenced environment variable is unset or invalid")
         })?;
+
         let mut value: serde_json::Value = ::config::Config::builder()
             .add_source(::config::File::from_str(&rendered, format))
             .build()
@@ -31,11 +34,15 @@ impl Config {
                 }
             }
         }
+
         let mut config: Self = serde_json::from_value(value).map_err(|_| eyre::eyre!("invalid config value or unknown field; use providers.<name> configuration in tinyllm.example.toml"))?;
+
         if config.server.state_dir.as_os_str().is_empty() {
             bail!("set server.state_dir or provide HOME/XDG_STATE_HOME for its default");
         }
+
         resolve_path(&mut config.server.state_dir, path);
+
         for (prefix, provider) in &mut config.providers {
             match provider {
                 ProviderConfig::Anthropic(anthropic) => {
@@ -48,10 +55,21 @@ impl Config {
                         }
                     }
                 }
+                ProviderConfig::Kimi(kimi) => {
+                    if let KimiAuth::Subscription(options) = &mut kimi.auth {
+                        if options.credentials_dir.as_os_str().is_empty() {
+                            options.credentials_dir =
+                                config.server.state_dir.join("auth").join(prefix);
+                        } else {
+                            resolve_path(&mut options.credentials_dir, path);
+                        }
+                    }
+                }
                 ProviderConfig::OpenAi(openai) => {
                     if let OpenAiAuth::Subscription(options) = &mut openai.auth {
                         if options.credentials_dir.as_os_str().is_empty() {
                             options.credentials_dir = config.server.state_dir.join("auth");
+
                             if prefix != "openai" {
                                 options.credentials_dir.push(prefix);
                             }
@@ -63,7 +81,9 @@ impl Config {
                 _ => {}
             }
         }
+
         config.validate()?;
+
         Ok(config)
     }
 
@@ -71,6 +91,7 @@ impl Config {
         if self.providers.is_empty() {
             bail!("configure at least one provider");
         }
+
         if self
             .server
             .auth_token
@@ -81,6 +102,7 @@ impl Config {
                 "server.auth_token must be nonempty without whitespace or control characters; omit it to disable authentication"
             );
         }
+
         for (prefix, provider) in &self.providers {
             if matches!(prefix.as_str(), "." | "..")
                 || prefix.is_empty()
@@ -93,9 +115,11 @@ impl Config {
                     "provider names must contain 1–64 ASCII letters, digits, dots, underscores or hyphens"
                 );
             }
+
             match provider {
                 ProviderConfig::Anthropic(c) => {
                     validate_user_agent(c.user_agent.as_deref())?;
+
                     if let Some(version) = c.claude_code_version.as_deref()
                         && !billing::is_bare_version(version)
                     {
@@ -103,11 +127,13 @@ impl Config {
                             "providers.anthropic.claude_code_version must be a bare X.Y.Z version"
                         );
                     }
+
                     let local = validate_url(
                         c.base_url
                             .as_deref()
                             .unwrap_or("https://api.anthropic.com/v1"),
                     )?;
+
                     if let AnthropicAuth::Subscription(options) = &c.auth {
                         if options
                             .credentials_dir
@@ -118,6 +144,7 @@ impl Config {
                                 "Anthropic credentials_dir must not contain '..'; use the direct directory path"
                             );
                         }
+
                         if !local
                             && c.base_url
                                 .as_deref()
@@ -129,6 +156,7 @@ impl Config {
                                 "Anthropic subscription auth requires the canonical Anthropic API (loopback allowed for fixtures)"
                             );
                         }
+
                         if path_identity(&options.credentials_dir)?
                             == path_identity(&self.server.state_dir.join("auth"))?
                         {
@@ -139,6 +167,48 @@ impl Config {
                     } else {
                         c.auth.api_key()?;
                     }
+
+                    for id in c.models.keys() {
+                        validate_model(id)?;
+                    }
+                }
+                ProviderConfig::Kimi(c) => {
+                    if let KimiAuth::Subscription(options) = &c.auth {
+                        if options
+                            .credentials_dir
+                            .components()
+                            .any(|component| component == Component::ParentDir)
+                        {
+                            bail!(
+                                "Kimi credentials_dir must not contain '..'; use the direct directory path"
+                            );
+                        }
+
+                        if path_identity(&options.credentials_dir)?
+                            == path_identity(&self.server.state_dir.join("auth"))?
+                        {
+                            bail!(
+                                "Kimi credentials_dir must not be the shared auth root (server.state_dir/auth)"
+                            );
+                        }
+                    } else {
+                        c.auth.api_key()?;
+                    }
+
+                    if c.auth.uses_code_api() {
+                        let code_api = c.region.code_api();
+                        let base = c.base_url.as_deref().unwrap_or(code_api);
+                        let local = validate_url(base)?;
+
+                        if !local && base.trim_end_matches('/') != code_api {
+                            bail!(
+                                "Kimi Code auth requires the region's Kimi Code API (loopback allowed for fixtures)"
+                            );
+                        }
+                    } else if let Some(url) = &c.base_url {
+                        validate_url(url)?;
+                    }
+
                     for id in c.models.keys() {
                         validate_model(id)?;
                     }
@@ -146,6 +216,7 @@ impl Config {
                 ProviderConfig::OpenAi(c) => {
                     validate_user_agent(c.user_agent.as_deref())?;
                     let local = validate_url(c.base_url())?;
+
                     if c.auth.is_subscription() {
                         if !local
                             && c.base_url().trim_end_matches('/')
@@ -155,46 +226,55 @@ impl Config {
                                 "subscription auth requires the ChatGPT Codex backend (loopback allowed for fixtures)"
                             );
                         }
+
                         if c.organization.is_some() || c.project.is_some() {
                             bail!("organization and project apply to API keys only");
                         }
                     } else {
                         c.auth.api_key()?;
                     }
+
                     for id in c.models.keys() {
                         validate_model(id)?;
                     }
                 }
                 ProviderConfig::OpenRouter(c) => {
                     validate_user_agent(c.user_agent.as_deref())?;
+
                     if !valid_key(&c.api_key) {
                         bail!(
                             "provider api_key must be nonempty without whitespace or control characters"
                         );
                     }
+
                     if let Some(url) = &c.base_url {
                         validate_url(url)?;
                     }
+
                     for id in c.models.keys() {
                         validate_model(id)?;
                     }
                 }
                 ProviderConfig::Zai(c) => {
                     validate_user_agent(c.user_agent.as_deref())?;
+
                     if !valid_key(&c.api_key) {
                         bail!(
                             "provider api_key must be nonempty without whitespace or control characters"
                         );
                     }
+
                     if let Some(url) = &c.base_url {
                         validate_url(url)?;
                     }
+
                     for id in c.models.keys() {
                         validate_model(id)?;
                     }
                 }
             }
         }
+
         let s = &self.server;
         // Both are resolved per request, so a bad value must fail at startup
         // rather than on every affected request.
@@ -203,20 +283,26 @@ impl Config {
                 .split_once('/')
                 .ok_or_else(|| eyre::eyre!("{setting} must be provider/native-model-id"))?;
             validate_model(model)?;
+
             if !self.providers.contains_key(prefix) {
                 bail!("{setting} names provider {prefix:?}, which is not configured");
             }
+
             Ok(())
         };
+
         if let Some(reviewer) = &s.auto_review_model {
             routable("auto_review_model", reviewer)?;
         }
+
         for (alias, target) in &s.model_aliases {
             if alias.is_empty() {
                 bail!("model_aliases keys must not be empty");
             }
+
             routable("model_aliases", target)?;
         }
+
         for name in [
             s.obsolete_max_state_bytes
                 .as_ref()
@@ -231,6 +317,7 @@ impl Config {
                 "obsolete server setting ignored; tinyllm no longer stores continuations, so it can be deleted"
             );
         }
+
         if s.max_concurrent_requests
             .is_some_and(|limit| !(1..=tokio::sync::Semaphore::MAX_PERMITS).contains(&limit))
         {
@@ -239,6 +326,7 @@ impl Config {
                 tokio::sync::Semaphore::MAX_PERMITS
             );
         }
+
         if s.max_request_bytes == 0
             || s.max_response_bytes == 0
             || s.request_body_timeout_seconds == 0
@@ -247,6 +335,7 @@ impl Config {
         {
             bail!("limits and timeouts must be positive");
         }
+
         Ok(())
     }
 }
@@ -257,23 +346,25 @@ fn path_identity(path: &Path) -> Result<PathBuf> {
     } else {
         std::env::current_dir()?.join(path)
     };
+
     let mut ancestor = absolute.as_path();
     let mut missing = Vec::new();
     let existing = loop {
         match ancestor.canonicalize() {
             Ok(path) => break path,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let name = ancestor.file_name().ok_or_else(|| {
-                    eyre::eyre!("cannot resolve Anthropic credential path identity")
-                })?;
+                let name = ancestor
+                    .file_name()
+                    .ok_or_else(|| eyre::eyre!("cannot resolve credential path identity"))?;
                 missing.push(name.to_owned());
-                ancestor = ancestor.parent().ok_or_else(|| {
-                    eyre::eyre!("cannot resolve Anthropic credential path identity")
-                })?;
+                ancestor = ancestor
+                    .parent()
+                    .ok_or_else(|| eyre::eyre!("cannot resolve credential path identity"))?;
             }
-            Err(_) => bail!("cannot resolve Anthropic credential path identity"),
+            Err(_) => bail!("cannot resolve credential path identity"),
         }
     };
+
     Ok(missing
         .into_iter()
         .rev()
@@ -296,6 +387,7 @@ fn validate_user_agent(value: Option<&str>) -> Result<()> {
     }) {
         bail!("provider user_agent must be a nonempty valid HTTP header value");
     }
+
     Ok(())
 }
 pub(crate) fn validate_model(model: &str) -> Result<()> {
@@ -306,6 +398,7 @@ pub(crate) fn validate_model(model: &str) -> Result<()> {
     {
         bail!("invalid native model ID");
     }
+
     Ok(())
 }
 fn validate_url(value: &str) -> Result<bool> {
@@ -316,6 +409,7 @@ fn validate_url(value: &str) -> Result<bool> {
                 .parse::<std::net::IpAddr>()
                 .is_ok_and(|ip| ip.is_loopback())
     });
+
     if !(url.scheme() == "https" || (url.scheme() == "http" && local))
         || !url.username().is_empty()
         || url.password().is_some()
@@ -326,5 +420,6 @@ fn validate_url(value: &str) -> Result<bool> {
             "provider base_url must use HTTPS (HTTP allowed for loopback fixtures), without credentials, query or fragment"
         );
     }
+
     Ok(local)
 }

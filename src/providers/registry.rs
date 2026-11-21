@@ -1,5 +1,5 @@
 use super::{
-    Provider, anthropic::AnthropicProvider, http, openai::OpenAiProvider,
+    Provider, anthropic::AnthropicProvider, http, kimi::KimiProvider, openai::OpenAiProvider,
     openrouter::OpenRouterProvider, zai::ZaiProvider,
 };
 use crate::{
@@ -21,9 +21,15 @@ impl Registry {
     pub async fn new(config: &Config) -> eyre::Result<Self> {
         let client = http::client(&config.server)?;
         let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+
         for (name, provider) in &config.providers {
             let provider: Arc<dyn Provider> = match provider {
                 ProviderConfig::Anthropic(c) => Arc::new(AnthropicProvider::new(
+                    c.clone(),
+                    client.clone(),
+                    config.server.clone(),
+                )?),
+                ProviderConfig::Kimi(c) => Arc::new(KimiProvider::new(
                     c.clone(),
                     client.clone(),
                     config.server.clone(),
@@ -44,8 +50,10 @@ impl Registry {
                     config.server.clone(),
                 )?),
             };
+
             providers.insert(name.clone(), provider);
         }
+
         Ok(Self { providers })
     }
 
@@ -80,6 +88,7 @@ impl Registry {
                 tracing::warn!(provider = %prefix, error = %error, "cannot list upstream models");
                 Vec::new()
             });
+
             models.extend(provider.models());
             let mut seen = HashSet::new();
             models
@@ -91,6 +100,7 @@ impl Registry {
                 })
                 .collect::<Vec<_>>()
         });
+
         futures::future::join_all(lists)
             .await
             .into_iter()

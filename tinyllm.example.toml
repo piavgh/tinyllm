@@ -90,11 +90,12 @@ format = "compact"
 # Rename or add instances as needed; use openai login --provider NAME for subscriptions.
 # base_url values are API roots: endpoint paths are appended automatically.
 # HTTPS is required, except HTTP on loopback; no credentials/query/fragment in URLs.
-# Every provider accepts an optional user_agent override for upstream inference requests;
-# omitting it sends tinyllm/<version>. This changes only the User-Agent header.
+# Every provider except kimi accepts an optional user_agent override for upstream
+# inference requests; omitting it sends tinyllm/<version>. This changes only the
+# User-Agent header.
 
 [providers.openai]
-# Supported types: openai, openrouter, zai, anthropic (lowercase, case-sensitive).
+# Supported types: openai, openrouter, zai, anthropic, kimi (lowercase, case-sensitive).
 type = "openai"
 
 # Codex format: codex_cli_rs/<version> (<OS> <version>; <arch>) <terminal>.
@@ -210,3 +211,30 @@ reasoning_effort = "medium"
 # Discovery lists the upstream catalog. Model entries take no options: reasoning
 # and output format travel with the request, so there is nothing to default or cap.
 # [providers.anthropic.models."claude-sonnet-4-6"]
+
+# Optional Kimi provider. Clients request kimi/kimi-for-coding. All three client
+# formats work. The provider sends the real client identity, so it has no
+# user_agent option: Kimi asks tools to keep their real client identity.
+# region is "global" (default) or "china". It picks all Kimi hosts; log in again
+# after you change it.
+# [providers.kimi]
+# type = "kimi"
+# region = "global"
+# base_url = "https://api.moonshot.ai" # MoonshotApiKey only; host root, no /v1.
+# [providers.kimi.auth]
+# Choose one type. Subscription needs `tinyllm kimi login` first (add --provider
+# NAME for renamed tables). Default credentials: server.state_dir/auth/PROVIDER/kimi.json.
+# type = "Subscription"
+# options = { credentials_dir = "private-kimi-auth" } # Optional.
+#
+# ApiKey is a Kimi Code Console key (kimi.com/code), billed to the membership.
+# It is not pay-per-use. Replace the two lines above with:
+# type = "ApiKey"
+# options = "${KIMI_CODE_API_KEY:-}"
+#
+# MoonshotApiKey is a Kimi API Platform key (platform.kimi.ai), pay per use.
+# It is a different account system, so the two keys cannot be swapped:
+# type = "MoonshotApiKey"
+# options = "${MOONSHOT_API_KEY:-}"
+# Model entries take no options: they only add the ID to discovery.
+# [providers.kimi.models."kimi-for-coding"]
