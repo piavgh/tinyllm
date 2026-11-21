@@ -124,9 +124,9 @@ The two key kinds come from separate account systems. One cannot replace the oth
 it, log in again.
 
 The `kimi` provider sends the real client identity: the client's `User-Agent` on
-Messages requests, otherwise `tinyllm/<version>`, plus `X-Msh-Platform: tinyllm` for
-subscriptions. It has no `user_agent` option, because Kimi's terms forbid faking the
-client identity.
+Messages requests, otherwise `tinyllm/<version>`, plus device headers such as
+`X-Msh-Platform: tinyllm` for subscriptions. It has no `user_agent` option. Kimi asks
+third-party tools to keep their real client identity, so tinyllm never fakes it.
 
 Use `tinyllm --config /path/to/config.toml` to select another config; YAML is also
 supported. Environment variables expand before parsing, including in comments.
