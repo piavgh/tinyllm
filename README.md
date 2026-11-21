@@ -1,7 +1,7 @@
 # tinyllm
 
-A small Rust gateway that lets Claude Code use OpenAI, OpenRouter, Z.ai and
-Anthropic models. Claude Code keeps control of tools, MCP connections, permissions,
+A small Rust gateway that lets Claude Code use OpenAI, OpenRouter, Z.ai,
+Anthropic and Kimi models. Claude Code keeps control of tools, MCP connections, permissions,
 background shells and subagents; tinyllm translates the API traffic.
 
 ## What it supports
@@ -12,6 +12,7 @@ background shells and subagents; tinyllm translates the API traffic.
 | OpenRouter | API key | `openrouter/deepseek/deepseek-4-pro` | all three |
 | Z.ai | API key | `zai/glm-5.3` | all three |
 | Anthropic | API key or subscription OAuth | `anthropic/claude-sonnet-4-6` | Anthropic Messages only |
+| Kimi | Moonshot API key, Kimi Code API key or subscription | `kimi/kimi-for-coding` | all three |
 
 - Anthropic Messages, OpenAI Chat Completions and Responses, with JSON or streaming SSE.
 - Text, images, multiple tool calls and structured tool results.
@@ -105,6 +106,27 @@ credentials. OAuth availability, acceptable third-party use, account entitlement
 and billing treatment remain Anthropic policy decisions; login does not guarantee
 any of them. Your local gateway token is never forwarded.
 That file documents all server, logging, provider and model options.
+
+#### Kimi
+
+The `kimi` provider has three `auth.type` values:
+
+- `ApiKey`: a key from the Kimi Code Console (kimi.com/code). It is billed to your
+  Kimi Code membership. Unlike `ApiKey` in `openai` and `anthropic`, it is not pay-per-use.
+- `MoonshotApiKey`: a key from the Kimi API Platform (platform.kimi.ai, formerly
+  platform.moonshot.ai). It is pay per use.
+- `Subscription`: run `tinyllm kimi login [--headless] [--provider NAME]`. Open the
+  printed URL on any device and enter the code. `--headless` skips the browser launch.
+
+The two key kinds come from separate account systems. One cannot replace the other.
+
+`region` is `global` (default) or `china`. It picks all Kimi hosts. After you change
+it, log in again.
+
+The `kimi` provider sends the real client identity: the client's `User-Agent` on
+Messages requests, otherwise `tinyllm/<version>`, plus `X-Msh-Platform: tinyllm` for
+subscriptions. It has no `user_agent` option, because Kimi's terms forbid faking the
+client identity.
 
 Use `tinyllm --config /path/to/config.toml` to select another config; YAML is also
 supported. Environment variables expand before parsing, including in comments.
@@ -239,7 +261,7 @@ builds, and the Git tag (such as `v0.1.0`) for releases.
 `~/.local/state/tinyllm` (or `$XDG_STATE_HOME/tinyllm`) holds default subscription
 credentials. OpenAI uses `auth/openai.json`; Anthropic uses
 `auth/<provider-name>/anthropic.json`, keeping it out of OpenAI's directory-wide
-lock. Nothing else is stored there.
+lock; Kimi uses `auth/<provider-name>/kimi.json`. Nothing else is stored there.
 
 The gateway keeps no conversation state. OpenAI encrypted reasoning travels back
 to the client inside `redacted_thinking` blocks (Chat Completions uses

@@ -58,6 +58,12 @@ enum Command {
         about = "Manage Anthropic subscription authentication"
     )]
     Anthropic(AnthropicCommand),
+    #[command(
+        name = "kimi",
+        subcommand,
+        about = "Manage Kimi subscription authentication"
+    )]
+    Kimi(KimiCommand),
 }
 
 #[derive(Subcommand)]
@@ -97,6 +103,22 @@ enum AnthropicCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum KimiCommand {
+    /// Sign in with a Kimi subscription.
+    Login {
+        #[arg(long, help = "Print the login URL without opening a browser")]
+        headless: bool,
+        #[arg(long, default_value = "kimi")]
+        provider: String,
+    },
+    /// Remove tinyllm's locally stored Kimi subscription credentials.
+    Logout {
+        #[arg(long, default_value = "kimi")]
+        provider: String,
+    },
+}
+
 fn anthropic_credentials_dir<'a>(
     config: &'a config::Config,
     prefix: &str,
@@ -108,6 +130,19 @@ fn anthropic_credentials_dir<'a>(
         eyre::bail!("set the provider auth.type to Subscription before login or logout");
     };
     Ok(&options.credentials_dir)
+}
+
+fn kimi_credentials<'a>(
+    config: &'a config::Config,
+    prefix: &str,
+) -> eyre::Result<(&'a std::path::Path, providers::kimi::models::Region)> {
+    let Some(config::ProviderConfig::Kimi(kimi)) = config.providers.get(prefix) else {
+        eyre::bail!("login and logout require a configured Kimi provider");
+    };
+    let providers::kimi::models::KimiAuth::Subscription(options) = &kimi.auth else {
+        eyre::bail!("set the provider auth.type to Subscription before login or logout");
+    };
+    Ok((&options.credentials_dir, kimi.region))
 }
 
 #[tokio::main]
@@ -174,6 +209,27 @@ async fn main() -> eyre::Result<()> {
                 AnthropicCommand::Logout { .. } => {
                     session.logout()?;
                     println!("Local Anthropic subscription credentials removed.");
+                }
+            }
+            return Ok(());
+        }
+        Some(Command::Kimi(command)) => {
+            let prefix = match &command {
+                KimiCommand::Login { provider, .. } | KimiCommand::Logout { provider } => provider,
+            };
+            let (directory, region) = kimi_credentials(&config, prefix)?;
+            let session = providers::kimi::auth::Session::open(directory, region)?;
+            match command {
+                KimiCommand::Login { headless, .. } => {
+                    tokio::select! {
+                        result = session.login(headless) => result?,
+                        _ = tokio::signal::ctrl_c() => eyre::bail!("login cancelled"),
+                    }
+                    println!("Kimi subscription login saved. Start tinyllm with the same config.");
+                }
+                KimiCommand::Logout { .. } => {
+                    session.logout()?;
+                    println!("Local Kimi subscription credentials removed.");
                 }
             }
             return Ok(());
@@ -271,6 +327,44 @@ mod tests {
         }))
         .unwrap();
         assert!(anthropic_credentials_dir(&api_key, "anthropic").is_err());
+    }
+
+    #[test]
+    fn kimi_cli_parses_and_requires_subscription_provider_type() {
+        use super::{Cli, Command, KimiCommand, kimi_credentials};
+        use clap::Parser;
+        use tinyllm::providers::kimi::models::Region;
+
+        let cli =
+            Cli::try_parse_from(["tinyllm", "kimi", "login", "--headless", "--provider", "k2"])
+                .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Kimi(KimiCommand::Login { headless: true, provider })) if provider == "k2"
+        ));
+
+        let cli = Cli::try_parse_from(["tinyllm", "kimi", "logout"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Kimi(KimiCommand::Logout { provider })) if provider == "kimi"
+        ));
+
+        let subscription: tinyllm::config::Config = serde_json::from_value(serde_json::json!({
+            "providers": {
+                "k2": {
+                    "type":"kimi",
+                    "region":"china",
+                    "auth":{"type":"Subscription","options":{"credentials_dir":"private"}}
+                },
+                "kimi": {"type":"kimi","auth":{"type":"ApiKey","options":"fixture-key"}}
+            }
+        }))
+        .unwrap();
+        let (directory, region) = kimi_credentials(&subscription, "k2").unwrap();
+        assert_eq!(directory, std::path::Path::new("private"));
+        assert_eq!(region, Region::China);
+        assert!(kimi_credentials(&subscription, "kimi").is_err());
+        assert!(kimi_credentials(&subscription, "missing").is_err());
     }
 
     #[test]
