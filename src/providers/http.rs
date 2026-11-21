@@ -163,6 +163,7 @@ pub(crate) struct ForwardRequest {
     streaming: bool,
     context: RequestContext,
     user_agent: Option<String>,
+    headers: HeaderMap,
 }
 
 pub(crate) fn prepare(
@@ -189,12 +190,17 @@ pub(crate) fn prepare(
         streaming,
         context,
         user_agent: user_agent.map(str::to_owned),
+        headers: HeaderMap::new(),
     })
 }
 
 impl ForwardRequest {
     pub(crate) fn payload_mut(&mut self) -> &mut Value {
         &mut self.value
+    }
+
+    pub(crate) fn headers_mut(&mut self) -> &mut HeaderMap {
+        &mut self.headers
     }
 }
 
@@ -205,6 +211,7 @@ pub(crate) async fn send(
     extra_anthropic_beta: Option<&str>,
 ) -> Result<Response> {
     let mut builder = auth.apply(client.post(request.url.clone()).json(&request.value))?;
+    builder = builder.headers(request.headers.clone());
     if let Some(user_agent) = &request.user_agent {
         builder = builder.header(reqwest::header::USER_AGENT, user_agent);
     }

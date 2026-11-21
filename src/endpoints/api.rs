@@ -34,6 +34,14 @@ fn provider_metadata(id: &str, provider: &ProviderConfig) -> Value {
                 "api_key"
             },
         ),
+        ProviderConfig::Kimi(config) => (
+            "kimi",
+            if config.auth.is_subscription() {
+                "subscription"
+            } else {
+                "api_key"
+            },
+        ),
         ProviderConfig::OpenAi(config) => (
             "openai",
             if config.auth.is_subscription() {
@@ -73,5 +81,31 @@ mod tests {
             provider_metadata("codex", &subscription),
             json!({"id": "codex", "type": "openai", "auth": "subscription"})
         );
+    }
+
+    #[test]
+    fn provider_metadata_reports_kimi_auth_families() {
+        for (auth, expected) in [
+            (
+                json!({"type": "Subscription", "options": {}}),
+                "subscription",
+            ),
+            (
+                json!({"type": "ApiKey", "options": "fixture-key"}),
+                "api_key",
+            ),
+            (
+                json!({"type": "MoonshotApiKey", "options": "fixture-key"}),
+                "api_key",
+            ),
+        ] {
+            let provider: ProviderConfig =
+                serde_json::from_value(json!({"type": "kimi", "auth": auth})).unwrap();
+
+            assert_eq!(
+                provider_metadata("kimi", &provider),
+                json!({"id": "kimi", "type": "kimi", "auth": expected})
+            );
+        }
     }
 }

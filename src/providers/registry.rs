@@ -1,5 +1,5 @@
 use super::{
-    Provider, anthropic::AnthropicProvider, http, openai::OpenAiProvider,
+    Provider, anthropic::AnthropicProvider, http, kimi::KimiProvider, openai::OpenAiProvider,
     openrouter::OpenRouterProvider, zai::ZaiProvider,
 };
 use crate::{
@@ -24,6 +24,11 @@ impl Registry {
         for (name, provider) in &config.providers {
             let provider: Arc<dyn Provider> = match provider {
                 ProviderConfig::Anthropic(c) => Arc::new(AnthropicProvider::new(
+                    c.clone(),
+                    client.clone(),
+                    config.server.clone(),
+                )?),
+                ProviderConfig::Kimi(c) => Arc::new(KimiProvider::new(
                     c.clone(),
                     client.clone(),
                     config.server.clone(),

@@ -79,6 +79,7 @@ fn native_model_options_validate_effort() {
                     ProviderConfig::Anthropic(_) => {
                         unreachable!("anthropic models take no options")
                     }
+                    ProviderConfig::Kimi(_) => unreachable!("kimi models take no options"),
                     ProviderConfig::OpenAi(c) => c.models["native/model"].reasoning_effort,
                     ProviderConfig::OpenRouter(c) => c.models["native/model"].reasoning_effort,
                     ProviderConfig::Zai(c) => c.models["native/model"].reasoning_effort,
@@ -148,6 +149,58 @@ fn request(format: ApiFormat, model: &str, stream: bool) -> ApiRequest {
         }),
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn send_applies_extra_headers_only_when_set() {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+    let app = Router::new().fallback(post(move |headers: HeaderMap| {
+        let sender = sender.clone();
+        async move {
+            sender.send(headers).await.unwrap();
+            Json(json!({}))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    )
+    .parse::<reqwest::Url>()
+    .unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = http::client(&Server::default()).unwrap();
+
+    let mut prepared = http::prepare(
+        url.clone(),
+        request(ApiFormat::ChatCompletions, "m", false),
+        context("m"),
+        None,
+    )
+    .unwrap();
+    prepared
+        .headers_mut()
+        .insert("x-msh-platform", "tinyllm".parse().unwrap());
+    http::send(&client, &prepared, http::Auth::Bearer("k"), None)
+        .await
+        .unwrap();
+    let seen = receiver.recv().await.unwrap();
+    assert_eq!(seen["x-msh-platform"], "tinyllm");
+
+    let plain = http::prepare(
+        url,
+        request(ApiFormat::ChatCompletions, "m", false),
+        context("m"),
+        None,
+    )
+    .unwrap();
+    http::send(&client, &plain, http::Auth::Bearer("k"), None)
+        .await
+        .unwrap();
+    let seen_plain = receiver.recv().await.unwrap();
+    assert!(!seen_plain.contains_key("x-msh-platform"));
+
+    task.abort();
 }
 
 #[tokio::test]

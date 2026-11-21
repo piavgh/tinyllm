@@ -1,6 +1,7 @@
 pub use crate::models::config::{Config, ProviderConfig, Server};
 use crate::providers::{
     anthropic::{billing, models::AnthropicAuth},
+    kimi::models::KimiAuth,
     openai::models::OpenAiAuth,
 };
 use eyre::{Result, WrapErr, bail};
@@ -40,6 +41,16 @@ impl Config {
             match provider {
                 ProviderConfig::Anthropic(anthropic) => {
                     if let AnthropicAuth::Subscription(options) = &mut anthropic.auth {
+                        if options.credentials_dir.as_os_str().is_empty() {
+                            options.credentials_dir =
+                                config.server.state_dir.join("auth").join(prefix);
+                        } else {
+                            resolve_path(&mut options.credentials_dir, path);
+                        }
+                    }
+                }
+                ProviderConfig::Kimi(kimi) => {
+                    if let KimiAuth::Subscription(options) = &mut kimi.auth {
                         if options.credentials_dir.as_os_str().is_empty() {
                             options.credentials_dir =
                                 config.server.state_dir.join("auth").join(prefix);
@@ -138,6 +149,41 @@ impl Config {
                         }
                     } else {
                         c.auth.api_key()?;
+                    }
+                    for id in c.models.keys() {
+                        validate_model(id)?;
+                    }
+                }
+                ProviderConfig::Kimi(c) => {
+                    if let KimiAuth::Subscription(options) = &c.auth {
+                        if options
+                            .credentials_dir
+                            .components()
+                            .any(|component| component == Component::ParentDir)
+                        {
+                            bail!(
+                                "Kimi credentials_dir must not contain '..'; use the direct directory path"
+                            );
+                        }
+                        if path_identity(&options.credentials_dir)?
+                            == path_identity(&self.server.state_dir.join("auth"))?
+                        {
+                            bail!("Kimi credentials must not use OpenAI's default auth directory");
+                        }
+                    } else {
+                        c.auth.api_key()?;
+                    }
+                    if c.auth.uses_code_api() {
+                        let code_api = c.region.code_api();
+                        let base = c.base_url.as_deref().unwrap_or(code_api);
+                        let local = validate_url(base)?;
+                        if !local && base.trim_end_matches('/') != code_api {
+                            bail!(
+                                "Kimi Code auth requires the region's Kimi Code API (loopback allowed for fixtures)"
+                            );
+                        }
+                    } else if let Some(url) = &c.base_url {
+                        validate_url(url)?;
                     }
                     for id in c.models.keys() {
                         validate_model(id)?;
